@@ -3,15 +3,12 @@
 import click
 
 from pendant import __version__
-from pendant.core.config import DEFAULT_PENDANT_ADDRESS
-
-
 @click.group()
 @click.version_option(version=__version__)
 @click.option('--address', '-a',
               envvar='PENDANT_ADDRESS',
-              default=DEFAULT_PENDANT_ADDRESS,
-              help='Pendant Bluetooth address')
+              default=None,
+              help='Pendant Bluetooth address (or set PENDANT_ADDRESS)')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
 @click.pass_context
 def cli(ctx, address, verbose):

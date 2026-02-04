@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 # Device Configuration
+DEFAULT_PENDANT_ADDRESS = os.environ.get("PENDANT_ADDRESS")
 
 # BLE UUIDs
 AUDIO_SERVICE_UUID = "632de001-604c-446b-a80f-7963e950f3fb"
