@@ -1,0 +1,37 @@
+# Encryption keys (sensitive!)
+keys/
+
+# Generated protobuf
+proto/*_pb2.py
+
+# Audio output files
+*.opus
+*.raw
+*.enc
+*.wav
+*.ogg
+
+# APK and decompiled source (large, can be re-generated)
+*.apk
+limitless_source/
+
+# Debug artifacts
+bugreport*/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Timestamp metadata (optional - remove this line if you want to track them)
+pendant_*.json
+
+# Nix
+result
+.direnv/
+
+# Local config
+.envrc
+.claude/
