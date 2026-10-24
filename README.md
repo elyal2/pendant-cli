@@ -4,9 +4,9 @@ Fork de [sdelcore/pendant-cli](https://github.com/sdelcore/pendant-cli), orienta
 **reaprovechar un Limitless Pendant que se ha quedado sin servicio** tras la adquisición de Limitless.ai por
 Meta, y sustituir la nube del fabricante por un servidor propio (self-hosted).
 
-> **Estado: experimental.** El código base (CLI BLE) viene del proyecto original y está documentado como
-> funcional contra un dispositivo real. Todo lo que aparece bajo [Roadmap](#roadmap) todavía **no está
-> implementado ni probado** en este fork.
+> **Estado: experimental.** Verificado contra un Pendant real (firmware `1.1.20`) desde macOS:
+> emparejamiento, `status`, `info` y descarga + decodificación de audio. Todo lo que aparece bajo
+> [Roadmap](#roadmap) todavía **no está implementado ni probado** en este fork.
 
 ## Objetivo
 
@@ -24,9 +24,11 @@ Pendant ──BLE──> Gateway (Raspberry Pi / mini PC / Mac con BlueZ o CoreB
 El Pendant graba en su flash interna, así que no hace falta streaming continuo: el gateway sincroniza
 cuando el dispositivo está al alcance.
 
-## Qué hay hoy (heredado del upstream)
+## Qué hay hoy
 
-- Emparejamiento y gestión de conexión BLE (`bluetoothctl` / D-Bus; backend `bleak` alternativo).
+- **Dos backends BLE** con la misma interfaz: D-Bus/BlueZ en Linux (heredado del upstream) y **Bleak** en
+  macOS (añadido en este fork). Se elige solo; fuerza uno con `PENDANT_BACKEND=dbus|bleak`.
+- Emparejamiento: con BlueZ vía `bluetoothctl`; en macOS, con `pendant bt pair` (ver [Quick Start](#quick-start)).
 - Descarga por lotes de las grabaciones almacenadas en flash.
 - Decodificación de Opus crudo a WAV.
 - Estado e información del dispositivo (batería, grabación, almacenamiento, firmware).
@@ -60,6 +62,13 @@ cuando el dispositivo está al alcance.
   El enfoque es reutilizar el dispositivo **tal cual**, no reprogramarlo.
 - Proyecto upstream pequeño (2 commits). Toda la documentación procede de una única fuente.
 
+## Cifrado: lo observado
+
+Tras un reset de fábrica y `pendant crypto setkey`, el audio descargado llegó **en claro** (campo
+`codec_beamforming_data`; ningún chunk con `encrypted_codec_beamforming_data`) y se decodificó sin clave. No
+sé si la clave no se aplicó, necesita otro estado del dispositivo o el comando no es el que espera el
+firmware `1.1.20`. Tenlo en cuenta: **quien esté cerca del Pendant en modo emparejable puede leer su audio**.
+
 ## Aviso crítico: grabaciones existentes
 
 Las grabaciones que el Pendant ya tenga almacenadas están cifradas con la clave del servidor de Limitless y
@@ -73,29 +82,50 @@ Haz copia de seguridad de `keys/`: perder la clave privada equivale a perder las
 
 ## Requisitos
 
-- Linux con BlueZ (`bluetoothctl`) — es el único entorno soportado por el upstream.
+- **macOS** (backend Bleak) o **Linux con BlueZ** (backend D-Bus; solo el de Linux viene del upstream y no
+  está probado en este fork).
 - Python 3.11 o 3.12 (según `pyproject.toml`).
 - [uv](https://docs.astral.sh/uv/) o Nix (recomendado por el upstream).
-- Dependencias del sistema para Opus (`libopus`) y D-Bus/GObject.
+- `libopus` (en macOS: `brew install opus`). Si `opuslib` no lo encuentra, exporta
+  `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
+- `protoc` para generar `proto/pendant_pb2.py` (ver [Desarrollo](#desarrollo)).
+- macOS: la app de terminal desde la que lances el CLI necesita permiso de Bluetooth. Un proceso sin ese
+  permiso aborta con SIGABRT al iniciar CoreBluetooth.
 
 ## Quick Start
 
 ```bash
-# Entorno (Nix) — o `uv sync` si prefieres uv
-nix develop
-
-# Dirección del dispositivo
-export PENDANT_ADDRESS="XX:XX:XX:XX:XX:XX"
+uv sync                     # (o `nix develop`)
+protoc -I proto --python_out=proto proto/pendant.proto
 
 pendant bt scan             # localizar el Pendant
-pendant bt pair             # emparejar (solo la primera vez)
-pendant status              # batería, grabación, almacenamiento
+pendant bt pair             # emparejar (solo la primera vez, ver abajo)
+pendant status              # batería, grabación
+pendant info                # firmware
 
-pendant crypto keygen       # tu par X25519 (se guarda en keys/)
-pendant crypto setkey       # enviar clave pública al dispositivo
-
-pendant download -d         # descargar y decodificar a WAV
+pendant download -d -o recordings   # descargar y decodificar a WAV
 ```
+
+`PENDANT_ADDRESS` es opcional con el backend Bleak: sin él se autodescubre el Pendant. En macOS la
+"dirección" es un UUID de CoreBluetooth (p. ej. `680E1644-...`), no una MAC.
+
+### Emparejar (macOS)
+
+El Pendant solo acepta un vínculo nuevo cuando está en modo emparejable (**LED azul**). Si ya estuvo
+vinculado a otro dispositivo (p. ej. tu móvil con la app de Limitless) rechaza el emparejamiento con
+`Pairing Failed reason=8`.
+
+1. Apaga el Bluetooth del móvil.
+2. Reset de fábrica oficial: **pulsa y suelta**, y **enseguida pulsa y mantén** hasta que desaparezca la luz
+   morada; el LED pasa a azul. (Mantener 10 s sin más no es el método documentado y puede dejarlo en rojo
+   fijo = modo recuperación; mantén el botón hasta que se apague el rojo y repite.)
+3. `pendant bt pair`. El CLI escribe con confirmación al canal de control; el Pendant responde
+   "insufficient encryption" y macOS empareja solo, sin diálogo.
+
+Un reset **borra** las grabaciones no sincronizadas.
+
+Referencia de colores LED:
+[help.limitless.ai](https://help.limitless.ai/en/articles/10542073-what-do-the-different-pendant-led-light-colors-mean).
 
 ## Comandos
 
@@ -108,13 +138,14 @@ pendant listen              # Escuchar mensajes del dispositivo
 # Audio
 pendant download            # Descargar grabaciones
 pendant download -d         # Descargar y decodificar a WAV
+pendant download -t 300     # Esperar hasta 300 s (--idle N: parar tras N s sin páginas nuevas, solo Bleak)
 pendant decode file.opus    # Opus crudo -> WAV
 pendant record              # Iniciar grabación (puede no funcionar por BLE)
 pendant stop                # Parar grabación (puede no funcionar por BLE)
 pendant clear               # Borrar almacenamiento del dispositivo
 
-# Bluetooth
-pendant bt scan | pair | connect | disconnect | status
+# Bluetooth (connect/disconnect/forget/status solo aplican a BlueZ)
+pendant bt scan | pair | connect | disconnect | forget | status
 
 # Cifrado
 pendant crypto keygen       # Generar par X25519
@@ -141,7 +172,11 @@ pendant debug               # Descarga con inspección de flash pages
 
 Nada de esto está implementado todavía.
 
-- [ ] **Verificar el hardware real**: bonding, `status`, `download` y `setkey` contra mi unidad.
+- [x] **Verificar el hardware real**: bonding, `status`, `info` y `download` funcionan en macOS.
+- [ ] Investigar por qué `setkey` no activa el cifrado en el firmware `1.1.20`.
+- [ ] Corregir el parser: `DeviceInfoMsg` no coincide con el firmware (la versión sale como "Serial") y
+      el porcentaje de almacenamiento marca siempre 0 %.
+- [ ] El Pendant graba de forma casi continua: entender el criterio (VAD) y ajustarlo (`settings vad`).
 - [ ] **Gateway de sincronización**: demonio que detecta el Pendant al alcance, sincroniza por lotes, guarda
       los WAV con su timestamp y borra del dispositivo solo tras confirmar la copia.
 - [ ] **Transcripción local**: faster-whisper / whisper.cpp sobre los WAV.
@@ -150,7 +185,6 @@ Nada de esto está implementado todavía.
 - [ ] **Almacenamiento y búsqueda** de lifelogs (SQLite/Postgres + búsqueda de texto y semántica).
 - [ ] **Investigar el canal Wi-Fi**: capturar el tráfico del dispositivo en una red controlada para ver a
       qué host y con qué protocolo sube los datos, y si es reapuntable (DNS local / servidor propio).
-- [ ] Soporte de gateway en macOS/otros (hoy solo Linux/BlueZ).
 - [ ] Streaming en tiempo real (`real_time_mode_enabled` existe en el protobuf, pero el CLI solo usa
       el modo por lotes).
 
@@ -182,8 +216,10 @@ ffmpeg y VLC no reproducen este formato directamente; usa `pendant decode`.
 
 ## Solución de problemas
 
-- **El dispositivo no responde:** comprueba que está emparejado **y** bonded (`bluetoothctl info $PENDANT_ADDRESS`),
-  toca el Pendant para despertarlo; como último recurso, reset de fábrica (mantener el botón 10+ s).
+- **El dispositivo no responde (callado, sin errores):** no está bonded. En macOS lanza `pendant bt pair` con el
+  Pendant en azul; en Linux comprueba `bluetoothctl info $PENDANT_ADDRESS`.
+- **`Pairing Failed reason=8` (log de bluetoothd):** el Pendant no está en modo emparejable; haz el reset
+  oficial (ver arriba).
 - **Falla la conexión / "Device not found":** asegúrate de que no está conectado al teléfono (conexión
   exclusiva), que no está dormido y reintenta `pendant bt scan`; si persiste, elimina el emparejamiento y
   repite `pendant bt pair`.
@@ -194,7 +230,7 @@ ffmpeg y VLC no reproducen este formato directamente; usa `pendant decode`.
 ## Desarrollo
 
 ```bash
-protoc --python_out=proto proto/pendant.proto   # regenerar protobuf
+protoc -I proto --python_out=proto proto/pendant.proto   # regenerar protobuf (protoc <= runtime de protobuf)
 uv run pytest                                    # tests
 ```
 
@@ -202,7 +238,7 @@ uv run pytest                                    # tests
 src/pendant/
   cli.py             - Entrada Click
   commands/          - Implementación de comandos CLI
-  core/              - Protocolo, clientes BLE (D-Bus/bleak), decodificador Opus
+  core/              - Protocolo, clientes BLE (client.py elige D-Bus o Bleak), decodificador Opus
 proto/               - pendant.proto (pendant_pb2.py generado, no versionado)
 keys/                - Claves de cifrado generadas (no versionado; haz backup)
 PROTOCOL.md          - Documentación del protocolo
